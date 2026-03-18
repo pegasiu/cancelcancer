@@ -443,18 +443,57 @@ ${nextStepRule}
   }
 
   const data = await res.json();
-  const text = data.choices[0].message.content;
+  const text: string = data.choices[0].message.content;
 
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {}
+  // Try parsing approaches in order of reliability
+  const parsed = tryParseJsonResponse(text);
+  if (parsed && parsed.title && parsed.content) {
+    return parsed;
   }
 
+  // Final fallback — use raw text as content
   return {
     title: `${agentType} analysis complete`,
     content: text,
     summary: `${step} completed for pipeline analysis.`,
   };
+}
+
+function tryParseJsonResponse(text: string): { title: string; content: string; summary: string } | null {
+  // 1. Direct parse
+  try {
+    const obj = JSON.parse(text);
+    if (obj.title && obj.content) return obj;
+  } catch {}
+
+  // 2. Strip markdown code block wrapper (```json ... ```)
+  const codeBlockMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (codeBlockMatch) {
+    try {
+      const obj = JSON.parse(codeBlockMatch[1]);
+      if (obj.title && obj.content) return obj;
+    } catch {}
+  }
+
+  // 3. Find outermost { ... } by bracket counting
+  const start = text.indexOf('{');
+  if (start !== -1) {
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < text.length; i++) {
+      if (text[i] === '{') depth++;
+      else if (text[i] === '}') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end !== -1) {
+      try {
+        const obj = JSON.parse(text.slice(start, end + 1));
+        if (obj.title && obj.content) return obj;
+      } catch {}
+    }
+  }
+
+  return null;
 }
