@@ -292,19 +292,41 @@ async function realNeoantigenScreening(pipeline: any, mutationData: any) {
 }
 
 async function queryIEDB(gene: string, aaChange: string, allele: string) {
-  // Get protein sequence from UniProt for the mutated gene
   const sequence = await getProteinSequence(gene);
   if (!sequence || sequence.length < 9) return null;
 
-  // Use a 15-mer window around the mutation site for epitope prediction
-  // For simplicity, take first 50 residues if we can't locate exact mutation site
-  const querySeq = sequence.slice(0, Math.min(50, sequence.length));
+  // Parse mutation position (e.g., "R248W" → position 248, "K916Qfs*33" → position 916)
+  const posMatch = aaChange.match(/[A-Z](\d+)/);
+  const mutPos = posMatch ? parseInt(posMatch[1]) - 1 : 0; // 0-indexed
 
+  // Extract a window around the mutation site (±15 residues)
+  const windowStart = Math.max(0, mutPos - 15);
+  const windowEnd = Math.min(sequence.length, mutPos + 16);
+  const querySeq = sequence.slice(windowStart, windowEnd);
+
+  if (querySeq.length < 9) return null;
+
+  // Run both recommended (EL score) and netmhcpan_ba (IC50 in nM)
+  const [elResult, baResult] = await Promise.all([
+    fetchIEDB(querySeq, allele, "recommended"),
+    fetchIEDB(querySeq, allele, "netmhcpan_ba"),
+  ]);
+
+  if (!elResult) return null;
+
+  return {
+    peptide: elResult.peptide,
+    score: elResult.score,
+    percentileRank: elResult.percentileRank,
+    ic50nM: baResult?.score || null, // netmhcpan_ba returns IC50 in the score column
+    ic50Rank: baResult?.percentileRank || null,
+    windowRegion: `${windowStart + 1}-${windowEnd}`,
+  };
+}
+
+async function fetchIEDB(sequence: string, allele: string, method: string) {
   const params = new URLSearchParams({
-    method: "recommended",
-    sequence_text: querySeq,
-    allele: allele,
-    length: "9",
+    method, sequence_text: sequence, allele, length: "9",
   });
 
   const res = await fetch("https://tools-cluster-interface.iedb.org/tools_api/mhci/", {
@@ -315,12 +337,9 @@ async function queryIEDB(gene: string, aaChange: string, allele: string) {
 
   if (!res.ok) return null;
   const text = await res.text();
-
-  // Parse TSV response
   const lines = text.trim().split("\n");
   if (lines.length < 2) return null;
 
-  // Find strongest binder (lowest percentile_rank)
   let bestPeptide = null;
   let bestRank = Infinity;
 
@@ -328,7 +347,7 @@ async function queryIEDB(gene: string, aaChange: string, allele: string) {
     const cols = line.split("\t");
     if (cols.length < 10) continue;
     const peptide = cols[5];
-    const score = parseFloat(cols[8]);
+    const score = parseFloat(cols[8]); // score for recommended, ic50 for netmhcpan_ba
     const rank = parseFloat(cols[9]);
     if (rank < bestRank) {
       bestRank = rank;
@@ -569,7 +588,7 @@ Results:
 - Moderate binders (rank 0.5-2.0): ${results.moderateBinders}
 
 Top candidates (real IEDB predictions):
-${results.candidates.slice(0, 8).map((c: any, i: number) => `${i + 1}. Peptide: ${c.peptide} | Gene: ${c.gene} | ${c.hlaAllele} | Rank: ${c.percentileRank} | Score: ${c.score}`).join("\n")}
+${results.candidates.slice(0, 8).map((c: any, i: number) => `${i + 1}. Peptide: ${c.peptide} | Gene: ${c.gene} (${c.mutation}) | ${c.hlaAllele} | EL Rank: ${c.percentileRank} | IC50: ${c.ic50nM ? c.ic50nM.toFixed(1) + 'nM' : 'N/A'} | Region: ${c.windowRegion}`).join("\n")}
 
 Explain what percentile rank means, why these are real predictions from a validated immunology database, and which candidates are most promising.`;
 }
