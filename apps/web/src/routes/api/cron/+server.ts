@@ -197,6 +197,11 @@ async function runStep(step: string, pipeline: any) {
 async function realMutationHunting(pipeline: any) {
   const projectCode = TCGA_SAMPLES.find((s) => s.barcode === pipeline.sample_id)?.cancer || "BRCA";
 
+  await postProgress(pipeline.id, "mutation_hunter",
+    `Querying GDC API for somatic mutations in ${pipeline.cancer_type}...`,
+    `Mutation Hunter is querying the **Genomic Data Commons API** for real somatic mutation data from TCGA project **TCGA-${projectCode}**. This is the same database used by cancer researchers worldwide, containing whole-exome sequencing data from thousands of tumor samples.`
+  );
+
   const res = await fetch("https://api.gdc.cancer.gov/ssms", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
