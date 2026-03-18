@@ -18,6 +18,17 @@ export async function POST({ request }) {
   }
 
   try {
+    // Prevent double execution — skip if a step completed less than 60s ago
+    const recentActivity = await sql`
+      SELECT 1 FROM agent_posts
+      WHERE published_at > NOW() - INTERVAL '60 seconds'
+      AND metadata::text NOT LIKE '%progress_update%'
+      LIMIT 1
+    `;
+    if (recentActivity.length > 0) {
+      return json({ action: "skipped", reason: "Step completed less than 60s ago" });
+    }
+
     const active = await sql`
       SELECT id, sample_id, cancer_type, current_step, results, source
       FROM pipeline_runs WHERE status = 'running'

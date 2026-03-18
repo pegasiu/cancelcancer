@@ -14,7 +14,7 @@
   let { data } = $props();
 
   let totalPosts = $derived(
-    data.pipelines.reduce((sum: number, p: any) => sum + Number(p.post_count || 0), 0) + data.standalonePosts.length
+    data.pipelines.reduce((sum: number, p: any) => sum + Number(p.total_posts || 0), 0) + data.standalonePosts.length
   );
 
   function formatRelativeTime(dateString: string): string {
@@ -82,8 +82,8 @@
           <div class="progress-steps">
             {#each STEP_ORDER as step, i}
               {@const agent = AGENT_MAP[step]}
-              {@const isDone = i < Number(pipeline.post_count)}
-              {@const isCurrent = i === Number(pipeline.post_count) && pipeline.status === 'running'}
+              {@const isDone = i < Number(pipeline.step_count)}
+              {@const isCurrent = i === Number(pipeline.step_count) && pipeline.status === 'running'}
               <div class="progress-dot" class:done={isDone} class:current={isCurrent} style:--dot-color={agent.color} title={agent.label}>
                 {#if isDone}
                   <span class="dot-check">✓</span>
@@ -107,7 +107,7 @@
           {/if}
 
           <div class="card-footer">
-            <span class="post-count">{pipeline.post_count} articles</span>
+            <span class="post-count">{pipeline.step_count}/5 steps · {pipeline.total_posts} articles</span>
             {#if pipeline.latest_published}
               <span class="time">{formatRelativeTime(pipeline.latest_published)}</span>
             {/if}

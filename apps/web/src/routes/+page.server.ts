@@ -13,10 +13,11 @@ export async function load() {
       pr.status,
       pr.current_step,
       pr.created_at as pipeline_started,
-      (SELECT COUNT(*) FROM agent_posts ap WHERE ap.pipeline_run_id = pr.id) as post_count,
-      (SELECT ap.title FROM agent_posts ap WHERE ap.pipeline_run_id = pr.id ORDER BY ap.published_at DESC LIMIT 1) as latest_title,
-      (SELECT ap.agent_type FROM agent_posts ap WHERE ap.pipeline_run_id = pr.id ORDER BY ap.published_at DESC LIMIT 1) as latest_agent,
-      (SELECT ap.summary FROM agent_posts ap WHERE ap.pipeline_run_id = pr.id ORDER BY ap.published_at DESC LIMIT 1) as latest_summary,
+      (SELECT COUNT(*) FROM agent_posts ap WHERE ap.pipeline_run_id = pr.id AND ap.metadata::text NOT LIKE '%progress_update%') as step_count,
+      (SELECT COUNT(*) FROM agent_posts ap WHERE ap.pipeline_run_id = pr.id) as total_posts,
+      (SELECT ap.title FROM agent_posts ap WHERE ap.pipeline_run_id = pr.id AND ap.metadata::text NOT LIKE '%progress_update%' ORDER BY ap.published_at DESC LIMIT 1) as latest_title,
+      (SELECT ap.agent_type FROM agent_posts ap WHERE ap.pipeline_run_id = pr.id AND ap.metadata::text NOT LIKE '%progress_update%' ORDER BY ap.published_at DESC LIMIT 1) as latest_agent,
+      (SELECT ap.summary FROM agent_posts ap WHERE ap.pipeline_run_id = pr.id AND ap.metadata::text NOT LIKE '%progress_update%' ORDER BY ap.published_at DESC LIMIT 1) as latest_summary,
       (SELECT ap.published_at FROM agent_posts ap WHERE ap.pipeline_run_id = pr.id ORDER BY ap.published_at DESC LIMIT 1) as latest_published
     FROM pipeline_runs pr
     ORDER BY pr.created_at DESC
