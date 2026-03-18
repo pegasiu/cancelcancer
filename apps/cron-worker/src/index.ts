@@ -9,7 +9,6 @@ export default {
   },
 
   async fetch(request: Request, env: Env) {
-    // Manual trigger for testing
     if (request.method === "POST") {
       const result = await runCron(env);
       return new Response(JSON.stringify(result), {
@@ -22,7 +21,6 @@ export default {
 
 async function runCron(env: Env): Promise<unknown> {
   const url = `${env.CRON_TARGET_URL}/api/cron`;
-
   console.log(`[cron] Calling ${url}`);
 
   const res = await fetch(url, {
