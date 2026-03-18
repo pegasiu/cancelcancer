@@ -15,7 +15,7 @@ export default {
         headers: { "Content-Type": "application/json" },
       });
     }
-    return new Response("CancelCancer Cron Worker. POST to trigger manually.", { status: 200 });
+    return new Response("CancelCancer Cron Worker — active", { status: 200 });
   },
 };
 
