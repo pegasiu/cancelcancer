@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["bun-types"],
+    "paths": {
+      "@cancelcancer/db": ["../../packages/db/src"],
+      "@cancelcancer/shared": ["../../packages/shared/src"],
+      "@cancelcancer/bio-types": ["../../packages/bio-types/src"]
+    }
+  },
+  "include": ["src"]
+}

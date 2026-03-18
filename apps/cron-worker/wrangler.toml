@@ -1,0 +1,6 @@
+name = "cancelcancer-cron"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+[triggers]
+crons = ["*/10 * * * *"]  # Every 10 minutes
