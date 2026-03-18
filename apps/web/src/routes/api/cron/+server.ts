@@ -62,21 +62,32 @@ export async function POST({ request }) {
           return json({ action: "vastai_results_processed", step: stepToRun, ...result });
         }
 
-        // Check VAST.ai instance status
+        // Check if instance exited — if so, wait one more cycle for callback to arrive
         const status = await checkVastaiInstance(pendingJob.instanceId);
-        if (status === "exited" || status === "error") {
-          // Instance died — clean pending flag, retry next cron
+        const waitCycles = pendingJob.waitCycles || 0;
+
+        if (status === "exited" && waitCycles < 3) {
+          // Instance finished — give callback time to arrive (up to 3 cron cycles)
+          const updated = { ...pResults };
+          updated[`${stepToRun}_vastai_pending`] = { ...pendingJob, waitCycles: waitCycles + 1 };
+          await sql`UPDATE pipeline_runs SET results = ${JSON.stringify(updated)}::jsonb WHERE id = ${pipeline.id}`;
+          return json({ action: "waiting_for_callback", step: stepToRun, waitCycle: waitCycles + 1 });
+        }
+
+        if ((status === "exited" && waitCycles >= 3) || status === "error") {
+          // Callback never arrived — clean up and retry
           const clean = { ...pResults };
           delete clean[`${stepToRun}_vastai_pending`];
           await sql`UPDATE pipeline_runs SET results = ${JSON.stringify(clean)}::jsonb WHERE id = ${pipeline.id}`;
+          await destroyVastaiInstance(pendingJob.instanceId);
           return json({ action: "vastai_failed_will_retry", step: stepToRun });
         }
 
         await postProgress(pipeline.id, stepToRun === "mrna_design" ? "mrna_architect" : "drug_simulator",
-          `Waiting for VAST.ai compute job to finish...`,
-          `Job running on VAST.ai instance ${pendingJob.instanceId}. This typically takes 2-5 minutes for instance spin-up + computation.`
+          `VAST.ai compute job running (instance ${pendingJob.instanceId})...`,
+          `Job running on VAST.ai. Status: ${status}. This typically takes 2-5 minutes.`
         );
-        return json({ action: "waiting_for_vastai", step: stepToRun, instanceId: pendingJob.instanceId });
+        return json({ action: "waiting_for_vastai", step: stepToRun, instanceId: pendingJob.instanceId, status });
       }
 
       try {
@@ -822,49 +833,71 @@ function vastaiHeaders() {
   return { Authorization: `Bearer ${env.VASTAI_API_KEY || ""}`, "Content-Type": "application/json" };
 }
 
-/** Search for cheapest VAST.ai offer matching criteria */
-async function searchVastaiOffer(params: { gpuName?: string; minGpuRam?: number; cpuOnly?: boolean; minDisk?: number }): Promise<number | null> {
+/** Search and create VAST.ai instance — tries multiple offers */
+async function launchVastaiInstance(
+  searchParams: { gpuName?: string; minGpuRam?: number; minDisk?: number; maxPrice?: number },
+  image: string, disk: number, onstart: string
+): Promise<number | null> {
   try {
     const query: Record<string, any> = {
-      reliability: { gte: 0.9 },
-      disk_space: { gte: params.minDisk || 20 },
+      reliability: { gte: 0.85 },
+      disk_space: { gte: searchParams.minDisk || 10 },
     };
 
-    if (params.cpuOnly) {
-      query.cpu_cores = { gte: 4 };
-    } else if (params.gpuName) {
-      query.gpu_name = { eq: params.gpuName };
-      if (params.minGpuRam) query.gpu_ram = { gte: params.minGpuRam };
+    if (searchParams.gpuName) {
+      query.gpu_name = { eq: searchParams.gpuName };
+      if (searchParams.minGpuRam) query.gpu_ram = { gte: searchParams.minGpuRam };
+    }
+    if (searchParams.maxPrice) {
+      query.dph_total = { lte: searchParams.maxPrice };
     }
 
     const res = await fetch(
-      `${VASTAI_BASE}/bundles/?q=${encodeURIComponent(JSON.stringify(query))}&order=dph_total&type=ask&limit=1`,
+      `${VASTAI_BASE}/bundles/?q=${encodeURIComponent(JSON.stringify(query))}&order=dph_total&type=ask&limit=5`,
       { headers: vastaiHeaders() }
     );
 
-    if (!res.ok) { console.error("VAST.ai search failed:", res.status); return null; }
+    if (!res.ok) {
+      console.error("VAST.ai search failed:", res.status, await res.text());
+      return null;
+    }
+
     const data = (await res.json()) as any;
-    return data.offers?.[0]?.id || null;
-  } catch (e) {
-    console.error("VAST.ai search error:", e);
+    const offers = data.offers || [];
+
+    if (offers.length === 0) {
+      console.error("VAST.ai: no offers found for query", JSON.stringify(query));
+      return null;
+    }
+
+    // Try each offer until one works
+    for (const offer of offers) {
+      try {
+        const createRes = await fetch(`${VASTAI_BASE}/asks/${offer.id}/`, {
+          method: "PUT",
+          headers: vastaiHeaders(),
+          body: JSON.stringify({ client_id: "me", image, disk, onstart }),
+        });
+
+        if (!createRes.ok) {
+          console.log(`VAST.ai offer ${offer.id} failed: ${createRes.status}`);
+          continue;
+        }
+
+        const createData = (await createRes.json()) as any;
+        if (createData.success && createData.new_contract) {
+          console.log(`VAST.ai instance created: ${createData.new_contract} from offer ${offer.id} (${offer.gpu_name || 'CPU'} $${offer.dph_total}/hr)`);
+          return createData.new_contract;
+        }
+      } catch (e) {
+        console.log(`VAST.ai offer ${offer.id} error:`, e);
+      }
+    }
+
+    console.error("VAST.ai: all offers failed");
     return null;
-  }
-}
-
-/** Create VAST.ai instance with onstart script */
-async function createVastaiInstance(offerId: number, image: string, disk: number, onstart: string): Promise<number | null> {
-  try {
-    const res = await fetch(`${VASTAI_BASE}/asks/${offerId}/`, {
-      method: "PUT",
-      headers: vastaiHeaders(),
-      body: JSON.stringify({ client_id: "me", image, disk, onstart }),
-    });
-
-    if (!res.ok) { console.error("VAST.ai create failed:", res.status); return null; }
-    const data = (await res.json()) as any;
-    return data.new_contract || null;
   } catch (e) {
-    console.error("VAST.ai create error:", e);
+    console.error("VAST.ai launch error:", e);
     return null;
   }
 }
@@ -892,10 +925,6 @@ async function destroyVastaiInstance(instanceId: number) {
 
 /** Submit LinearDesign job to VAST.ai CPU instance */
 async function submitVastaiLinearDesign(pipelineId: string, peptides: string[], candidates: any[]): Promise<number | null> {
-  const offerId = await searchVastaiOffer({ cpuOnly: true, minDisk: 10 });
-  if (!offerId) return null;
-
-  // Onstart script: install LinearDesign, run for each peptide, POST results back
   const peptidesJson = JSON.stringify(peptides);
   const candidatesJson = JSON.stringify(candidates.map((c: any) => ({ gene: c.gene, peptide: c.peptide })));
 
@@ -936,19 +965,14 @@ curl -s -X POST "${CALLBACK_URL}" \
 echo "DONE — results posted to callback"
 `;
 
-  const instanceId = await createVastaiInstance(offerId, "ubuntu:22.04", 10, onstart);
-  return instanceId;
+  return await launchVastaiInstance(
+    { maxPrice: 0.20, minDisk: 10 },
+    "ubuntu:22.04", 10, onstart
+  );
 }
 
 /** Submit Boltz-2 job to VAST.ai GPU instance */
 async function submitVastaiBoltz2(pipelineId: string, structures: any[], candidates: any[]): Promise<number | null> {
-  const offerId = await searchVastaiOffer({ gpuName: "L40S", minGpuRam: 40, minDisk: 30 });
-  if (!offerId) {
-    // Try A100 as fallback
-    const a100Id = await searchVastaiOffer({ gpuName: "A100_SXM", minGpuRam: 40, minDisk: 30 });
-    if (!a100Id) return null;
-  }
-
   const targetGenes = structures.slice(0, 3).map((s: any) => ({ gene: s.gene, uniprotId: s.uniprotId, pdbUrl: s.pdbUrl }));
   const peptidesForDocking = candidates.slice(0, 3).map((c: any) => c.peptide).filter(Boolean);
 
@@ -1019,8 +1043,10 @@ PYEOF
 python3 /tmp/run_boltz.py
 `;
 
-  const instanceId = await createVastaiInstance(offerId || 0, "nvidia/cuda:12.1.0-runtime-ubuntu22.04", 30, onstart);
-  return instanceId;
+  return await launchVastaiInstance(
+    { gpuName: "RTX 4090", minGpuRam: 20, minDisk: 30, maxPrice: 0.30 },
+    "nvidia/cuda:12.1.0-runtime-ubuntu22.04", 30, onstart
+  );
 }
 
 /** Process results that arrived via VAST.ai callback */
