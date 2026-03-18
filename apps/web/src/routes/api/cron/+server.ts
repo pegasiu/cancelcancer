@@ -101,6 +101,9 @@ export async function POST({ request }) {
       }
     }
 
+    // Safety net: destroy any zombie VAST.ai instances before starting new work
+    await cleanupZombieInstances();
+
     const result = await startNewPipeline();
     return json({ action: "new_pipeline", ...result });
   } catch (err: any) {
@@ -1111,4 +1114,25 @@ async function localLinearDesignFallback(candidates: any[]) {
     } catch (e) { console.log(`Local LinearDesign failed: ${e}`); }
   }
   return { designs, totalDesigned: designs.length, dataSource: "LinearDesign local fallback" };
+}
+
+/** Kill any VAST.ai instances that are still running — prevent billing leaks */
+async function cleanupZombieInstances() {
+  try {
+    const res = await fetch(`${VASTAI_BASE}/instances/`, { headers: vastaiHeaders() });
+    if (!res.ok) return;
+    const data = (await res.json()) as any;
+    const instances = data.instances || [];
+
+    for (const instance of instances) {
+      console.log(`[cleanup] Destroying zombie VAST.ai instance ${instance.id} (${instance.gpu_name})`);
+      await destroyVastaiInstance(instance.id);
+    }
+
+    if (instances.length > 0) {
+      console.log(`[cleanup] Destroyed ${instances.length} zombie instances`);
+    }
+  } catch (e) {
+    console.error("[cleanup] Failed to check VAST.ai instances:", e);
+  }
 }
